@@ -1,0 +1,29 @@
+# FastAPI and server
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.17
+
+# Database
+sqlalchemy==2.0.45
+psycopg2-binary==2.9.11
+alembic==1.14.0
+
+# Supabase
+supabase==2.10.0
+
+# Validation and settings
+pydantic[email]==2.10.0
+pydantic-settings==2.6.0
+python-dotenv==1.0.1
+
+# Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+
+# Integrations
+slack-sdk==3.33.0
+resend==2.5.1
+
+# Utilities
+httpx>=0.24.0
