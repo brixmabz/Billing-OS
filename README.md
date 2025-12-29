@@ -62,3 +62,14 @@ src/
 │   └── collector/# Collector portal pages
 └── types/        # TypeScript types
 ```
+
+## Deployment (Vercel)
+
+1. Push code to GitHub
+2. Import project in [Vercel Dashboard](https://vercel.com/new)
+3. Set root directory to `frontend`
+4. Configure environment variables:
+   - `VITE_API_URL` = Your backend URL (e.g., `https://billing-os-api.onrender.com/api/v1`)
+   - `VITE_DEV_MODE` = `false`
+   - `VITE_APP_NAME` = `Billing Request OS`
+5. Deploy
