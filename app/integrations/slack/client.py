@@ -175,6 +175,35 @@ class SlackClient:
             blocks=message["blocks"]
         )
 
+    async def post_client_response(
+        self,
+        request: BillingRequest,
+        channel: str,
+        thread_ts: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Post notification when client responds via portal (thread reply).
+
+        Args:
+            request: The request that received a response
+            channel: Original message channel
+            thread_ts: Original message timestamp
+
+        Returns:
+            Slack response
+        """
+        from .messages import SlackMessageBuilder
+
+        builder = SlackMessageBuilder()
+        message = builder.client_response_message(request)
+
+        return await self.post_message(
+            text=message["text"],
+            blocks=message.get("blocks"),
+            channel=channel,
+            thread_ts=thread_ts
+        )
+
     async def send_dm(
         self,
         user_id: str,

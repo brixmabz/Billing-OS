@@ -90,6 +90,7 @@ class RequestBase(BaseModel):
     client_id: int
     account_reference: str = Field(..., min_length=1, max_length=100)
     internal_file_id: Optional[str] = Field(None, max_length=100)
+    balance: Optional[str] = Field(None, max_length=50)  # CRM balance snapshot
     debtor_language: str = Field(default="EN", max_length=10)
     request_type: RequestTypeEnum
     required_fields_payload: dict = Field(default_factory=dict)
@@ -139,6 +140,8 @@ class RequestResponse(BaseModel):
     sla_breached: bool = False
     resolution_code: Optional[ResolutionCodeEnum] = None
     resolution_notes: Optional[str] = None
+    portal_token: Optional[str] = None
+    portal_token_expires_at: Optional[datetime] = None
     attachments: List[AttachmentResponse] = []
     timeline: List[TimelineEvent] = []
 
@@ -163,6 +166,7 @@ class RequestClaimRequest(BaseModel):
 class RequestSendRequest(BaseModel):
     """Schema for sending request to client."""
     recipient_email: Optional[str] = None  # Override client email if needed
+    cc_email: Optional[str] = None  # CC email address
     message: Optional[str] = None  # Optional additional message
 
 

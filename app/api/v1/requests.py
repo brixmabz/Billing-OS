@@ -11,6 +11,7 @@ from app.models.user import User
 
 
 from app.services.request_service import RequestService
+from app.services.portal_service import PortalService
 
 
 from app.schemas.request import (
@@ -56,7 +57,8 @@ async def create_request(
 
     try:
         user_id = _get_attr(current_user, 'id')
-        request = await service.create_request(request_data, user_id)
+        user_name = _get_attr(current_user, 'full_name')
+        request = await service.create_request(request_data, user_id, collector_name=user_name)
         return _build_request_response(request)
     except DuplicateRequestError as e:
         raise HTTPException(
@@ -86,6 +88,7 @@ async def list_requests(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
     status: Optional[str] = Query(None),
+    request_type: Optional[str] = Query(None),
     client_id: Optional[int] = Query(None),
     sla_breached: Optional[bool] = Query(None),
     db: Session = Depends(get_db),
@@ -110,6 +113,7 @@ async def list_requests(
         skip=skip,
         limit=page_size,
         status=status,
+        request_type=request_type,
         collector_id=collector_id,
         client_id=client_id,
         sla_breached=sla_breached,
@@ -201,7 +205,8 @@ async def claim_request(
 
     try:
         user_id = _get_attr(current_user, 'id')
-        request = await service.claim_request(request_id, user_id)
+        user_name = _get_attr(current_user, 'full_name')
+        request = await service.claim_request(request_id, user_id, admin_name=user_name)
         return _build_request_response(request)
     except NotFoundError as e:
         raise HTTPException(
@@ -224,17 +229,29 @@ async def send_to_client(
 ):
     """
     Send request to client.
-    Moves request from CLAIMED to SENT status.
+    Moves request from CLAIMED to SENT status and generates portal token.
     """
-    service = RequestService(db)
+    request_service = RequestService(db)
+    portal_service = PortalService(db)
 
     try:
         user_id = _get_attr(current_user, 'id')
-        request = await service.send_to_client(
+        user_name = _get_attr(current_user, 'full_name')
+
+        # Update status to SENT
+        request = await request_service.send_to_client(
             request_id,
             user_id,
-            send_data.recipient_email
+            send_data.recipient_email,
+            admin_name=user_name
         )
+
+        # Generate portal token for client access
+        await portal_service.create_portal_session(request_id)
+
+        # Re-fetch request to get updated portal token
+        request = await request_service.get_request(request_id)
+
         return _build_request_response(request)
     except NotFoundError as e:
         raise HTTPException(
@@ -262,7 +279,8 @@ async def close_request(
 
     try:
         user_id = _get_attr(current_user, 'id')
-        request = await service.close_request(request_id, close_data, user_id)
+        user_name = _get_attr(current_user, 'full_name')
+        request = await service.close_request(request_id, close_data, user_id, admin_name=user_name)
         return _build_request_response(request)
     except NotFoundError as e:
         raise HTTPException(
@@ -291,11 +309,13 @@ async def request_more_info(
 
     try:
         user_id = _get_attr(current_user, 'id')
+        user_name = _get_attr(current_user, 'full_name')
         request = await service.request_more_info(
             request_id,
             need_info_data.reason,
             need_info_data.message,
-            user_id
+            user_id,
+            admin_name=user_name
         )
         return _build_request_response(request)
     except NotFoundError as e:
@@ -382,6 +402,8 @@ def _build_request_response(request) -> RequestResponse:
         sla_breached=request.sla_breached,
         resolution_code=request.resolution_code,
         resolution_notes=request.resolution_notes,
+        portal_token=request.portal_token,
+        portal_token_expires_at=request.portal_token_expires_at,
         attachments=[
             AttachmentResponse.model_validate(a) for a in (request.attachments or [])
         ],

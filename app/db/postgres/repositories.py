@@ -5,6 +5,7 @@ PostgreSQL repository implementations using SQLAlchemy.
 from typing import Optional, List, Any
 from datetime import datetime
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import func, and_, or_
 
 from app.db.base import RequestRepositoryInterface, UserRepositoryInterface, ClientRepositoryInterface
@@ -184,10 +185,14 @@ class PostgresRequestRepository(RequestRepositoryInterface):
         if not db_obj:
             return None
 
-        current_log = db_obj.audit_log or []
+        # Create a new list to ensure SQLAlchemy detects the change
+        current_log = list(db_obj.audit_log or [])
         current_log.append(event)
         db_obj.audit_log = current_log
         db_obj.updated_at = datetime.utcnow()
+
+        # Explicitly mark the JSON column as modified
+        flag_modified(db_obj, 'audit_log')
 
         self.db.commit()
         self.db.refresh(db_obj)

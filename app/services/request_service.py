@@ -7,8 +7,13 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 import hashlib
 import uuid
+import logging
 
 from app.db.postgres.repositories import PostgresRequestRepository
+from app.integrations.slack.client import get_slack_client
+
+logger = logging.getLogger(__name__)
+
 from app.models.request import (
     BillingRequest, RequestStatus, RequestType, Priority,
     REQUEST_TYPE_CONFIG, get_request_type_config
@@ -30,7 +35,8 @@ class RequestService:
     async def create_request(
         self,
         request_data: RequestCreate,
-        collector_id: int
+        collector_id: int,
+        collector_name: Optional[str] = None
     ) -> BillingRequest:
         """
         Create a new billing request.
@@ -75,6 +81,11 @@ class RequestService:
         def get_enum_value(val):
             return val.value if hasattr(val, 'value') else val
 
+        # Build payload with balance included (CRM snapshot)
+        payload = dict(request_data.required_fields_payload) if request_data.required_fields_payload else {}
+        if request_data.balance:
+            payload['balance'] = request_data.balance
+
         request_dict = {
             "request_id": request_id,
             "agency_id": get_enum_value(request_data.agency_id),
@@ -84,7 +95,7 @@ class RequestService:
             "debtor_language": request_data.debtor_language,
             "collector_id": collector_id,
             "request_type": get_enum_value(request_data.request_type),
-            "required_fields_payload": request_data.required_fields_payload,
+            "required_fields_payload": payload,
             "notes": request_data.notes,
             "status": get_enum_value(initial_status),
             "priority": get_enum_value(request_data.priority),
@@ -96,11 +107,28 @@ class RequestService:
                 "type": "created",
                 "description": "Request created",
                 "timestamp": datetime.utcnow().isoformat(),
-                "user": str(collector_id),
+                "user": collector_name if collector_name else str(collector_id),
+                "user_id": str(collector_id),
             }],
         }
 
-        return await self.repo.create(request_dict)
+        new_request = await self.repo.create(request_dict)
+
+        # Post to Slack (fire-and-forget)
+        try:
+            slack = get_slack_client()
+            if slack:
+                result = await slack.post_new_request(new_request)
+                if result and result.get("ts"):
+                    # Store Slack message info for thread replies
+                    await self.repo.update(new_request.id, {
+                        "slack_message_ts": result["ts"],
+                        "slack_channel_id": result.get("channel")
+                    })
+        except Exception as e:
+            logger.warning(f"Slack notification failed for {new_request.request_id}: {e}")
+
+        return new_request
 
     async def get_request(self, request_id: str) -> Optional[BillingRequest]:
         """Get a request by its formatted ID (REQ-####)."""
@@ -118,6 +146,7 @@ class RequestService:
         skip: int = 0,
         limit: int = 50,
         status: Optional[str] = None,
+        request_type: Optional[str] = None,
         collector_id: Optional[int] = None,
         client_id: Optional[int] = None,
         sla_breached: Optional[bool] = None,
@@ -126,6 +155,8 @@ class RequestService:
         filters = {}
         if status:
             filters["status"] = status
+        if request_type:
+            filters["request_type"] = request_type
         if collector_id:
             filters["collector_id"] = collector_id
         if client_id:
@@ -163,7 +194,12 @@ class RequestService:
 
         return await self.repo.update(request.id, update_dict)
 
-    async def claim_request(self, request_id: str, admin_id: int) -> BillingRequest:
+    async def claim_request(
+        self,
+        request_id: str,
+        admin_id: int,
+        admin_name: Optional[str] = None
+    ) -> BillingRequest:
         """Claim a request (admin action)."""
         request = await self.get_request(request_id)
 
@@ -173,21 +209,37 @@ class RequestService:
         await self._add_audit_entry(
             request.id,
             "claimed",
-            "Request claimed by admin",
-            admin_id
+            "Claimed",
+            admin_id,
+            user_name=admin_name
         )
 
-        return await self.repo.update_status(
+        updated_request = await self.repo.update_status(
             request.id,
             RequestStatus.CLAIMED,
             admin_id=admin_id
         )
 
+        # Post Slack thread reply (fire-and-forget)
+        try:
+            slack = get_slack_client()
+            if slack and request.slack_message_ts and request.slack_channel_id:
+                await slack.post_status_update(
+                    updated_request,
+                    request.slack_channel_id,
+                    request.slack_message_ts
+                )
+        except Exception as e:
+            logger.warning(f"Slack update failed for {request.request_id}: {e}")
+
+        return updated_request
+
     async def send_to_client(
         self,
         request_id: str,
         admin_id: int,
-        recipient_email: Optional[str] = None
+        recipient_email: Optional[str] = None,
+        admin_name: Optional[str] = None
     ) -> BillingRequest:
         """Mark request as sent to client."""
         request = await self.get_request(request_id)
@@ -198,11 +250,26 @@ class RequestService:
         await self._add_audit_entry(
             request.id,
             "sent_to_client",
-            f"Sent to client{f' ({recipient_email})' if recipient_email else ''}",
-            admin_id
+            "Sent to Client",
+            admin_id,
+            user_name=admin_name
         )
 
-        return await self.repo.update_status(request.id, RequestStatus.SENT)
+        updated_request = await self.repo.update_status(request.id, RequestStatus.SENT)
+
+        # Post Slack thread reply (fire-and-forget)
+        try:
+            slack = get_slack_client()
+            if slack and request.slack_message_ts and request.slack_channel_id:
+                await slack.post_status_update(
+                    updated_request,
+                    request.slack_channel_id,
+                    request.slack_message_ts
+                )
+        except Exception as e:
+            logger.warning(f"Slack update failed for {request.request_id}: {e}")
+
+        return updated_request
 
     async def record_client_response(
         self,
@@ -222,20 +289,45 @@ class RequestService:
             "responded_at": datetime.utcnow(),
         }
 
+        # Build description with resolution info if available
+        resolution_code = response_data.get("resolution_code", "")
+        description = "Client Responded"
+        if resolution_code:
+            # Format resolution code for display
+            formatted_code = resolution_code.replace("_", " ").title()
+            description = f"Client Responded - {formatted_code}"
+
         await self._add_audit_entry(
             request.id,
             "client_response",
-            "Client responded via portal",
-            None
+            description,
+            None,
+            user_name="Client",
+            metadata={"resolution_code": resolution_code} if resolution_code else None
         )
 
-        return await self.repo.update(request.id, update_dict)
+        updated_request = await self.repo.update(request.id, update_dict)
+
+        # Post Slack thread reply for client response (fire-and-forget)
+        try:
+            slack = get_slack_client()
+            if slack and request.slack_message_ts and request.slack_channel_id:
+                await slack.post_client_response(
+                    updated_request,
+                    request.slack_channel_id,
+                    request.slack_message_ts
+                )
+        except Exception as e:
+            logger.warning(f"Slack update failed for {request.request_id}: {e}")
+
+        return updated_request
 
     async def close_request(
         self,
         request_id: str,
         close_data: RequestCloseRequest,
-        admin_id: int
+        admin_id: int,
+        admin_name: Optional[str] = None
     ) -> BillingRequest:
         """Close a request with resolution."""
         request = await self.get_request(request_id)
@@ -246,11 +338,16 @@ class RequestService:
         # Extract resolution code value (comes from Pydantic schema as enum)
         resolution_code_value = close_data.resolution_code.value if hasattr(close_data.resolution_code, 'value') else close_data.resolution_code
 
+        # Format resolution code for display
+        formatted_code = resolution_code_value.replace("_", " ").title()
+
         await self._add_audit_entry(
             request.id,
             "closed",
-            f"Closed with resolution: {resolution_code_value}",
-            admin_id
+            f"Closed - {formatted_code}",
+            admin_id,
+            user_name=admin_name,
+            metadata={"resolution_code": resolution_code_value}
         )
 
         update_dict = {
@@ -260,7 +357,21 @@ class RequestService:
             "resolution_notes": close_data.resolution_notes,
         }
 
-        return await self.repo.update(request.id, update_dict)
+        updated_request = await self.repo.update(request.id, update_dict)
+
+        # Post Slack thread reply (fire-and-forget)
+        try:
+            slack = get_slack_client()
+            if slack and request.slack_message_ts and request.slack_channel_id:
+                await slack.post_status_update(
+                    updated_request,
+                    request.slack_channel_id,
+                    request.slack_message_ts
+                )
+        except Exception as e:
+            logger.warning(f"Slack update failed for {request.request_id}: {e}")
+
+        return updated_request
 
     async def check_duplicate(
         self,
@@ -299,7 +410,8 @@ class RequestService:
         request_id: str,
         reason: str,
         message: Optional[str],
-        admin_id: int
+        admin_id: int,
+        admin_name: Optional[str] = None
     ) -> BillingRequest:
         """
         Request more info from collector.
@@ -310,17 +422,17 @@ class RequestService:
         if request.status != RequestStatus.CLAIMED.value:
             raise ValidationError("Can only request info on CLAIMED requests")
 
-        # Build description with reason and optional message
-        description = f"More info requested: {reason}"
-        if message:
-            description += f" - Message: {message}"
+        # Build description with reason
+        description = f"More Info Requested - {reason}"
 
         # Add audit entry for rework tracking
         await self._add_audit_entry(
             request.id,
             "need_info_requested",
             description,
-            admin_id
+            admin_id,
+            user_name=admin_name,
+            metadata={"reason": reason, "message": message} if message else {"reason": reason}
         )
 
         return request
@@ -368,7 +480,9 @@ class RequestService:
         request_id: int,
         event_type: str,
         description: str,
-        user_id: Optional[int]
+        user_id: Optional[int],
+        user_name: Optional[str] = None,
+        metadata: Optional[dict] = None
     ) -> None:
         """Add an entry to the request's audit log."""
         event = {
@@ -376,6 +490,9 @@ class RequestService:
             "type": event_type,
             "description": description,
             "timestamp": datetime.utcnow().isoformat(),
-            "user": str(user_id) if user_id else None,
+            "user": user_name if user_name else (str(user_id) if user_id else None),
+            "user_id": str(user_id) if user_id else None,
         }
+        if metadata:
+            event["metadata"] = metadata
         await self.repo.append_audit_log(request_id, event)

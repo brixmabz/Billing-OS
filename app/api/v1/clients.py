@@ -145,6 +145,31 @@ async def update_client(
     return ClientResponse.model_validate(updated_client)
 
 
+@router.put("/{client_id}", response_model=ClientResponse)
+async def replace_client(
+    client_id: int,
+    update_data: ClientUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_admin_user)
+):
+    """
+    Replace/update a client (admin only).
+    """
+    repo = PostgresClientRepository(db)
+
+    client = await repo.get(client_id)
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Client not found"
+        )
+
+    update_dict = update_data.model_dump(exclude_unset=True)
+    updated_client = await repo.update(client_id, update_dict)
+
+    return ClientResponse.model_validate(updated_client)
+
+
 @router.get("/{client_id}/contacts")
 async def get_client_contacts(
     client_id: int,

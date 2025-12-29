@@ -108,11 +108,21 @@ async def get_portal_request(
 
     # Build PHI-safe request info
     request_type_value = request.request_type if request.request_type else "unknown"
+    payload = request.required_fields_payload or {}
+
+    # Extract balance from payload (try common field names)
+    balance = payload.get('balance') or payload.get('amount') or payload.get('balance_due')
+    if balance and isinstance(balance, (int, float)):
+        balance = f"${balance:,.2f}"
+
     request_info = PortalRequestInfo(
         request_id=request.request_id,
         request_type=request_type_value,
         request_type_display=REQUEST_TYPE_DISPLAY.get(request_type_value, request_type_value),
         account_reference=request.account_reference,
+        file_id=request.internal_file_id,
+        balance=balance,
+        inquiry_details=request.notes,
         created_at=request.created_at,
         status=request.status,
     )
@@ -120,7 +130,8 @@ async def get_portal_request(
     return PortalRequestResponse(
         is_valid=True,
         request=request_info,
-        client_name=request.client.name if request.client else None
+        client_name=request.client.name if request.client else None,
+        expires_at=request.portal_token_expires_at
     )
 
 
