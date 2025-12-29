@@ -1,4 +1,5 @@
 import type { LoginCredentials, AuthResponse, User } from '../types';
+import { tokenStorage } from '../utils/tokenStorage';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
@@ -13,7 +14,7 @@ class AuthAPI {
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
-    const token = localStorage.getItem('auth_token');
+    const token = tokenStorage.getToken();
 
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
@@ -83,11 +84,12 @@ class AuthAPI {
       refreshToken: rawResponse.refresh_token,
     };
 
-    // Store token
+    // Store tokens using appropriate storage based on rememberMe
     if (response.token) {
-      localStorage.setItem('auth_token', response.token);
-      if (credentials.rememberMe && response.refreshToken) {
-        localStorage.setItem('refresh_token', response.refreshToken);
+      tokenStorage.setRememberMe(credentials.rememberMe || false);
+      tokenStorage.setToken(response.token);
+      if (response.refreshToken) {
+        tokenStorage.setRefreshToken(response.refreshToken);
       }
     }
 
@@ -98,8 +100,7 @@ class AuthAPI {
     try {
       await this.request('/auth/logout', { method: 'POST' });
     } finally {
-      localStorage.removeItem('auth_token');
-      localStorage.removeItem('refresh_token');
+      tokenStorage.clear();
     }
   }
 
@@ -130,7 +131,7 @@ class AuthAPI {
   }
 
   async refreshToken(): Promise<AuthResponse> {
-    const storedRefreshToken = localStorage.getItem('refresh_token');
+    const storedRefreshToken = tokenStorage.getRefreshToken();
 
     if (!storedRefreshToken) {
       throw new Error('No refresh token available');
@@ -174,14 +175,14 @@ class AuthAPI {
     };
 
     if (response.token) {
-      localStorage.setItem('auth_token', response.token);
+      tokenStorage.setToken(response.token);
     }
 
     return response;
   }
 
   getStoredToken(): string | null {
-    return localStorage.getItem('auth_token');
+    return tokenStorage.getToken();
   }
 
   isTokenExpired(token: string): boolean {

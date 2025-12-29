@@ -2,6 +2,7 @@ import { createContext, useCallback, useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import type { LoginCredentials, AuthState, UserRole } from '../types';
 import { authAPI } from '../api/auth';
+import { tokenStorage } from '../utils/tokenStorage';
 
 // Check if dev mode is enabled via environment variable
 const DEV_MODE = import.meta.env.VITE_DEV_MODE === 'true';
@@ -80,8 +81,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
           });
         } catch {
           // Refresh failed, clear auth
-          localStorage.removeItem('auth_token');
-          localStorage.removeItem('refresh_token');
+          tokenStorage.clear();
           setState({
             user: null,
             token: null,
@@ -103,7 +103,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         });
       } catch {
         // Failed to get user, clear auth
-        localStorage.removeItem('auth_token');
+        tokenStorage.clear();
         setState({
           user: null,
           token: null,

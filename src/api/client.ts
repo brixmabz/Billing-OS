@@ -3,6 +3,8 @@
  * Handles authentication, token refresh, and error formatting
  */
 
+import { tokenStorage } from '../utils/tokenStorage';
+
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api/v1';
 
 export interface ApiError {
@@ -27,7 +29,7 @@ class HttpClient {
   }
 
   private getAuthHeaders(): HeadersInit {
-    const token = localStorage.getItem('auth_token');
+    const token = tokenStorage.getToken();
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
     };
@@ -46,8 +48,7 @@ class HttpClient {
         const refreshed = await this.tryRefreshToken();
         if (!refreshed) {
           // Clear tokens and redirect to login
-          localStorage.removeItem('auth_token');
-          localStorage.removeItem('refresh_token');
+          tokenStorage.clear();
           window.location.href = '/login';
           throw new Error('Session expired. Please login again.');
         }
@@ -86,7 +87,7 @@ class HttpClient {
   }
 
   private async tryRefreshToken(): Promise<boolean> {
-    const refreshToken = localStorage.getItem('refresh_token');
+    const refreshToken = tokenStorage.getRefreshToken();
     if (!refreshToken) return false;
 
     try {
@@ -98,7 +99,7 @@ class HttpClient {
 
       if (response.ok) {
         const data = await response.json();
-        localStorage.setItem('auth_token', data.access_token);
+        tokenStorage.setToken(data.access_token);
         return true;
       }
     } catch {
@@ -172,7 +173,7 @@ class HttpClient {
   }
 
   async upload<T>(endpoint: string, file: File, additionalData?: Record<string, string>): Promise<T> {
-    const token = localStorage.getItem('auth_token');
+    const token = tokenStorage.getToken();
     const formData = new FormData();
     formData.append('file', file);
 
