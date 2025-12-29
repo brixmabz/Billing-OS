@@ -3,7 +3,9 @@ import Navbar from '../../components/layout/Navbar';
 import SendToClientModal from '../../components/admin/SendToClientModal';
 import NeedInfoModal from '../../components/admin/NeedInfoModal';
 import { requestsAPI } from '../../api';
-import type { BillingRequestResponse, CloseRequestData } from '../../api/requests';
+import { clientsAPI } from '../../api/clients';
+import type { Client } from '../../api/clients';
+import type { BillingRequestResponse, CloseRequestData, AgencyID, RequestType } from '../../api/requests';
 import { useMutation } from '../../hooks/useApi';
 
 type QueueFilter = 'all' | 'pending' | 'sent' | 'responded' | 'breach';
@@ -17,15 +19,25 @@ interface QueueRequest {
   typeIcon: string;
   typeColor: string;
   collector: { initials: string; name: string; color: string };
-  status: 'pending' | 'claimed' | 'with-client' | 'responded' | 'breach';
+  status: 'pending' | 'claimed' | 'with-client' | 'responded' | 'closed' | 'breach';
   statusLabel: string;
   statusDetail?: string;
   age: string;
   isBreach?: boolean;
-  balance?: number;
+  balance?: string;
   notes?: string;
   createdAt?: string;
   claimedBy?: string;
+  internalFileId?: string;
+  requiredFieldsPayload?: Record<string, unknown>;
+  timeline?: Array<{
+    id: string;
+    type: string;
+    description: string;
+    timestamp: string;
+    user?: string;
+  }>;
+  slaRemaining?: string;
 }
 
 // Map request type to icon and color
@@ -49,6 +61,26 @@ const typeConfig: Record<string, { icon: string; color: string }> = {
 // Format request type for display
 const formatRequestType = (type: string): string => {
   return type.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+};
+
+// Format field name for display (e.g., "payment_method" -> "Payment Method")
+const formatFieldName = (key: string): string => {
+  return key.split('_').map(word =>
+    word.charAt(0).toUpperCase() + word.slice(1)
+  ).join(' ');
+};
+
+// Get timeline dot color based on event type
+const getTimelineDotColor = (type: string): string => {
+  const colors: Record<string, string> = {
+    claimed: 'bg-violet-500',
+    created: 'bg-blue-500',
+    sent_to_client: 'bg-emerald-500',
+    client_response: 'bg-emerald-500',
+    closed: 'bg-slate-500',
+    need_info_requested: 'bg-amber-500',
+  };
+  return colors[type] || 'bg-slate-400';
 };
 
 // Calculate relative time
@@ -121,10 +153,32 @@ const transformRequest = (req: BillingRequestResponse): QueueRequest => {
       statusDetail = req.resolution_code ? req.resolution_code.replace(/_/g, ' ') : undefined;
       break;
     case 'CLOSED':
-      uiStatus = 'responded';
+      uiStatus = 'closed';
       statusLabel = 'Closed';
       statusDetail = req.resolution_code ? req.resolution_code.replace(/_/g, ' ') : undefined;
       break;
+  }
+
+  // Calculate SLA remaining
+  let slaRemaining: string | undefined;
+  if (req.sla_due_at) {
+    const slaDue = new Date(req.sla_due_at);
+    const diffMs = slaDue.getTime() - now.getTime();
+    if (diffMs > 0) {
+      const days = Math.floor(diffMs / 86400000);
+      const hours = Math.floor((diffMs % 86400000) / 3600000);
+      const mins = Math.floor((diffMs % 3600000) / 60000);
+
+      if (days > 0) {
+        slaRemaining = `${days}d ${hours}h remaining`;
+      } else if (hours > 0) {
+        slaRemaining = `${hours}h ${mins}m remaining`;
+      } else {
+        slaRemaining = `${mins}m remaining`;
+      }
+    } else {
+      slaRemaining = 'Overdue';
+    }
   }
 
   return {
@@ -148,6 +202,11 @@ const transformRequest = (req: BillingRequestResponse): QueueRequest => {
     notes: req.notes,
     createdAt: req.created_at,
     claimedBy: req.assigned_admin_name,
+    internalFileId: req.internal_file_id,
+    balance: (req.required_fields_payload?.balance as string) || undefined,
+    requiredFieldsPayload: req.required_fields_payload,
+    timeline: req.timeline,
+    slaRemaining,
   };
 };
 
@@ -166,6 +225,12 @@ export default function Queue() {
   const [totalCount, setTotalCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
 
+  // Dropdown filter state
+  const [agencyFilter, setAgencyFilter] = useState<string>('');
+  const [clientFilter, setClientFilter] = useState<string>('');
+  const [typeFilter, setTypeFilter] = useState<string>('');
+  const [clients, setClients] = useState<Client[]>([]);
+
   // Calculate stats from requests
   const stats = {
     pending: requests.filter(r => r.status === 'pending' || r.status === 'claimed').length,
@@ -180,7 +245,8 @@ export default function Queue() {
   );
 
   const { execute: sendToClientAPI, loading: sending } = useMutation(
-    (requestId: string) => requestsAPI.sendToClient(requestId)
+    (args: { requestId: string; data?: { recipient_email?: string; cc_email?: string } }) =>
+      requestsAPI.sendToClient(args.requestId, args.data)
   );
 
   const { execute: closeRequestAPI, loading: closing } = useMutation(
@@ -198,7 +264,10 @@ export default function Queue() {
     try {
       const response = await requestsAPI.getRequests({
         page: currentPage,
-        page_size: 50
+        page_size: 50,
+        ...(agencyFilter && { agency_id: agencyFilter as AgencyID }),
+        ...(clientFilter && { client_id: parseInt(clientFilter) }),
+        ...(typeFilter && { request_type: typeFilter as RequestType }),
       });
       const transformed = response.items.map(transformRequest);
       setRequests(transformed);
@@ -209,11 +278,21 @@ export default function Queue() {
     } finally {
       setLoading(false);
     }
-  }, [currentPage]);
+  }, [currentPage, agencyFilter, clientFilter, typeFilter]);
 
   useEffect(() => {
     fetchRequests();
   }, [fetchRequests]);
+
+  // Fetch clients for dropdown on mount
+  useEffect(() => {
+    clientsAPI.getAllClients().then(setClients).catch(console.error);
+  }, []);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [agencyFilter, clientFilter, typeFilter]);
 
   const filteredRequests = requests.filter((req) => {
     if (activeFilter === 'all') return true;
@@ -252,10 +331,16 @@ export default function Queue() {
     setShowSlideOver(false);
   };
 
-  const handleSendToClient = async (_data: { recipientEmail: string; ccEmail?: string }): Promise<boolean> => {
+  const handleSendToClient = async (data: { recipientEmail: string; ccEmail?: string }): Promise<boolean> => {
     if (!sendingRequest) return false;
 
-    const result = await sendToClientAPI(sendingRequest.id);
+    const result = await sendToClientAPI({
+      requestId: sendingRequest.id,
+      data: {
+        recipient_email: data.recipientEmail,
+        cc_email: data.ccEmail
+      }
+    });
     if (result) {
       // Update local state on success
       setRequests((prev) =>
@@ -331,6 +416,7 @@ export default function Queue() {
       claimed: 'bg-violet-100 text-violet-700',
       'with-client': 'bg-blue-100 text-blue-700',
       responded: 'bg-emerald-100 text-emerald-700',
+      closed: 'bg-emerald-100 text-emerald-700',
       breach: 'bg-red-100 text-red-700',
     };
     return classes[status] || '';
@@ -342,6 +428,7 @@ export default function Queue() {
       claimed: 'fa-user-check',
       'with-client': 'fa-clock',
       responded: 'fa-reply',
+      closed: 'fa-check-circle',
       breach: 'fa-exclamation-circle',
     };
     return icons[status] || '';
@@ -469,27 +556,45 @@ export default function Queue() {
 
             {/* Dropdowns */}
             <div className="flex flex-wrap items-center gap-3 lg:ml-auto">
-              <select className="bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="">All Agencies</option>
-                <option>MSB</option>
-                <option>ICS</option>
-                <option>VV</option>
-              </select>
-              <select className="bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="">All Clients</option>
-                <option>Wesley Medical Center</option>
-                <option>Via Christi Health</option>
-                <option>Ascension Kansas</option>
-                <option>Stormont Vail Health</option>
-              </select>
-              <select className="bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="">All Types</option>
-                <option>Insurance Claim</option>
-                <option>Balance Dispute</option>
-                <option>Paid Direct</option>
-                <option>Not Our Patient</option>
-                <option>Itemized Bill</option>
-              </select>
+              <div className="relative">
+                <select
+                  value={agencyFilter}
+                  onChange={(e) => setAgencyFilter(e.target.value)}
+                  className="appearance-none bg-white border border-slate-300 rounded-lg pl-3 pr-8 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer"
+                >
+                  <option value="">All Agencies</option>
+                  <option value="MSB">MSB</option>
+                  <option value="ICS">ICS</option>
+                  <option value="VV">VV</option>
+                </select>
+                <i className="fas fa-chevron-down absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none"></i>
+              </div>
+              <div className="relative">
+                <select
+                  value={clientFilter}
+                  onChange={(e) => setClientFilter(e.target.value)}
+                  className="appearance-none bg-white border border-slate-300 rounded-lg pl-3 pr-8 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer"
+                >
+                  <option value="">All Clients</option>
+                  {clients.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+                <i className="fas fa-chevron-down absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none"></i>
+              </div>
+              <div className="relative">
+                <select
+                  value={typeFilter}
+                  onChange={(e) => setTypeFilter(e.target.value)}
+                  className="appearance-none bg-white border border-slate-300 rounded-lg pl-3 pr-8 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer"
+                >
+                  <option value="">All Types</option>
+                  {Object.keys(typeConfig).map((type) => (
+                    <option key={type} value={type}>{formatRequestType(type)}</option>
+                  ))}
+                </select>
+                <i className="fas fa-chevron-down absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none"></i>
+              </div>
               <button
                 onClick={fetchRequests}
                 disabled={loading}
@@ -737,7 +842,9 @@ export default function Queue() {
                       )}
                     </div>
                     <div className="mt-2 flex items-center space-x-4 text-sm">
-                      <span className="text-violet-700">Age: {selectedRequest.age}</span>
+                      <span className="text-violet-700">
+                        SLA: {selectedRequest.slaRemaining || 'N/A'}
+                      </span>
                     </div>
                   </div>
 
@@ -759,6 +866,22 @@ export default function Queue() {
                           {selectedRequest.accountNumber}
                         </span>
                       </div>
+                      {selectedRequest.internalFileId && (
+                        <div className="flex justify-between">
+                          <span className="text-slate-500 text-sm">MSB File ID</span>
+                          <span className="text-slate-800 font-mono text-sm">
+                            {selectedRequest.internalFileId}
+                          </span>
+                        </div>
+                      )}
+                      {selectedRequest.balance && (
+                        <div className="flex justify-between">
+                          <span className="text-slate-500 text-sm">Balance</span>
+                          <span className="text-slate-800 font-semibold text-sm">
+                            ${selectedRequest.balance}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -802,25 +925,120 @@ export default function Queue() {
                       </div>
                     </div>
                   )}
+
+                  {/* Captured Details */}
+                  {selectedRequest.requiredFieldsPayload &&
+                   Object.keys(selectedRequest.requiredFieldsPayload).filter(k => k !== 'balance').length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                        Captured Details
+                      </h3>
+                      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+                        {Object.entries(selectedRequest.requiredFieldsPayload)
+                          .filter(([key]) => key !== 'balance')
+                          .map(([key, value]) => (
+                            <div key={key} className="flex justify-between">
+                              <span className="text-slate-500 text-sm">{formatFieldName(key)}</span>
+                              <span className="text-slate-800 text-sm">{String(value ?? '')}</span>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Activity Log */}
+                  {selectedRequest.timeline && selectedRequest.timeline.length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                        Activity Log
+                      </h3>
+                      <div className="space-y-3">
+                        {selectedRequest.timeline.slice().reverse().map((event) => (
+                          <div key={event.id} className="flex items-start space-x-3">
+                            <div className={`w-2 h-2 ${getTimelineDotColor(event.type)} rounded-full mt-1.5`}></div>
+                            <div>
+                              <p className="text-slate-700 text-sm">
+                                {event.description}
+                                {event.user && <span className="font-medium"> by {event.user}</span>}
+                              </p>
+                              <p className="text-slate-400 text-xs">
+                                {new Date(event.timestamp).toLocaleString('en-US', {
+                                  month: 'short', day: 'numeric', year: 'numeric',
+                                  hour: 'numeric', minute: '2-digit', hour12: true
+                                })}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
               {/* Footer Actions */}
               <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex items-center space-x-3">
-                <button
-                  onClick={() => openSendModal(selectedRequest)}
-                  disabled={sending || selectedRequest.status !== 'claimed'}
-                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white py-2.5 rounded-lg font-medium text-sm transition-colors"
-                >
-                  <i className="fas fa-paper-plane mr-2"></i>Send to Client
-                </button>
-                <button
-                  onClick={() => openNeedInfoModal(selectedRequest)}
-                  disabled={requestingInfo || selectedRequest.status !== 'claimed'}
-                  className="px-4 py-2.5 bg-amber-100 hover:bg-amber-200 disabled:bg-amber-50 text-amber-700 rounded-lg font-medium text-sm transition-colors disabled:cursor-not-allowed"
-                >
-                  <i className={`fas ${requestingInfo ? 'fa-spinner fa-spin' : 'fa-question-circle'} mr-1`}></i>Need Info
-                </button>
+                {/* Pending: Show Claim button */}
+                {selectedRequest.status === 'pending' && (
+                  <button
+                    onClick={() => claimRequest(selectedRequest.id)}
+                    disabled={claiming}
+                    className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white py-2.5 rounded-lg font-medium text-sm transition-colors"
+                  >
+                    <i className={`fas ${claiming ? 'fa-spinner fa-spin' : 'fa-hand'} mr-2`}></i>
+                    Claim Request
+                  </button>
+                )}
+
+                {/* Claimed: Show Send to Client + Need Info */}
+                {selectedRequest.status === 'claimed' && (
+                  <>
+                    <button
+                      onClick={() => openSendModal(selectedRequest)}
+                      disabled={sending}
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white py-2.5 rounded-lg font-medium text-sm transition-colors"
+                    >
+                      <i className="fas fa-paper-plane mr-2"></i>Send to Client
+                    </button>
+                    <button
+                      onClick={() => openNeedInfoModal(selectedRequest)}
+                      disabled={requestingInfo}
+                      className="px-4 py-2.5 bg-amber-100 hover:bg-amber-200 disabled:bg-amber-50 text-amber-700 rounded-lg font-medium text-sm transition-colors"
+                    >
+                      <i className={`fas ${requestingInfo ? 'fa-spinner fa-spin' : 'fa-question-circle'} mr-1`}></i>Need Info
+                    </button>
+                  </>
+                )}
+
+                {/* With Client: Show status + Close option */}
+                {selectedRequest.status === 'with-client' && (
+                  <>
+                    <div className="flex-1 text-sm text-slate-600">
+                      <i className="fas fa-clock mr-2 text-blue-500"></i>
+                      Awaiting client response
+                    </div>
+                    <button
+                      onClick={() => closeRequest(selectedRequest.id)}
+                      disabled={closing}
+                      className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-medium text-sm transition-colors"
+                    >
+                      <i className={`fas ${closing ? 'fa-spinner fa-spin' : 'fa-check-circle'} mr-1`}></i>Close
+                    </button>
+                  </>
+                )}
+
+                {/* Responded: Show Close button */}
+                {selectedRequest.status === 'responded' && (
+                  <button
+                    onClick={() => closeRequest(selectedRequest.id)}
+                    disabled={closing}
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white py-2.5 rounded-lg font-medium text-sm transition-colors"
+                  >
+                    <i className={`fas ${closing ? 'fa-spinner fa-spin' : 'fa-check-circle'} mr-2`}></i>Close Request
+                  </button>
+                )}
+
+                {/* Always show close panel button */}
                 <button
                   onClick={() => setShowSlideOver(false)}
                   className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-medium text-sm transition-colors"

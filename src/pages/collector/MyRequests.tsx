@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import Navbar from '../../components/layout/Navbar';
-import { requestsAPI, type BillingRequestResponse, type RequestStatus } from '../../api';
+import { requestsAPI, type BillingRequestResponse, type RequestStatus, type RequestType } from '../../api';
 
 type StatusFilter = 'all' | 'pending' | 'with-client' | 'responded' | 'closed';
 
@@ -64,9 +64,41 @@ const formatDate = (dateStr: string): string => {
   });
 };
 
+// Format date with time
+const formatDateTime = (dateStr: string): string => {
+  return new Date(dateStr).toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+};
+
+// Format resolution code for display
+const formatResolutionCode = (code: string): string => {
+  return code.split('_').map(word =>
+    word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+  ).join(' ');
+};
+
+// Get timeline icon properties based on event type
+const getTimelineIconProps = (type: string): { bg: string; icon: string; color: string } => {
+  const map: Record<string, { bg: string; icon: string; color: string }> = {
+    'client_response': { bg: 'bg-emerald-100', icon: 'fa-reply', color: 'text-emerald-600' },
+    'sent_to_client': { bg: 'bg-blue-100', icon: 'fa-paper-plane', color: 'text-blue-600' },
+    'claimed': { bg: 'bg-violet-100', icon: 'fa-user-check', color: 'text-violet-600' },
+    'created': { bg: 'bg-slate-100', icon: 'fa-plus', color: 'text-slate-600' },
+    'closed': { bg: 'bg-slate-100', icon: 'fa-check-circle', color: 'text-slate-600' },
+  };
+  return map[type] || { bg: 'bg-slate-100', icon: 'fa-circle', color: 'text-slate-400' };
+};
+
 export default function MyRequests() {
   const [activeFilter, setActiveFilter] = useState<StatusFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState<string>('');
   const [selectedRequest, setSelectedRequest] = useState<BillingRequestResponse | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [requests, setRequests] = useState<BillingRequestResponse[]>([]);
@@ -85,7 +117,10 @@ export default function MyRequests() {
     setLoading(true);
     setError(null);
     try {
-      const response = await requestsAPI.getMyRequests({ page_size: 100 });
+      const response = await requestsAPI.getMyRequests({
+        page_size: 100,
+        ...(typeFilter && { request_type: typeFilter as RequestType }),
+      });
       setRequests(response.items);
 
       // Calculate stats
@@ -102,7 +137,7 @@ export default function MyRequests() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [typeFilter]);
 
   useEffect(() => {
     fetchRequests();
@@ -324,8 +359,21 @@ export default function MyRequests() {
               ))}
             </div>
 
-            {/* Search */}
+            {/* Search & Filters */}
             <div className="flex flex-wrap items-center gap-3 lg:ml-auto">
+              <div className="relative">
+                <select
+                  value={typeFilter}
+                  onChange={(e) => setTypeFilter(e.target.value)}
+                  className="appearance-none bg-white border border-slate-300 rounded-lg pl-3 pr-8 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer"
+                >
+                  <option value="">All Types</option>
+                  {Object.keys(typeColorMap).map((type) => (
+                    <option key={type} value={type}>{formatRequestType(type)}</option>
+                  ))}
+                </select>
+                <i className="fas fa-chevron-down absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none"></i>
+              </div>
               <div className="relative">
                 <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
                 <input
@@ -511,7 +559,9 @@ export default function MyRequests() {
                     <div>
                       <p className="text-emerald-800 font-semibold">Client Responded</p>
                       <p className="text-emerald-700 text-sm">
-                        {selectedRequest.resolution_code?.replace(/_/g, ' ') || 'Awaiting review'}
+                        {selectedRequest.resolution_code
+                          ? formatResolutionCode(selectedRequest.resolution_code)
+                          : 'Awaiting review'}
                       </p>
                     </div>
                   </div>
@@ -536,14 +586,63 @@ export default function MyRequests() {
                       {selectedRequest.account_reference}
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500 text-sm">File ID</span>
-                    <span className="text-slate-800 font-mono text-sm">
-                      {selectedRequest.internal_file_id || '-'}
-                    </span>
-                  </div>
+                  {(selectedRequest.required_fields_payload as Record<string, unknown>)?.balance != null && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-500 text-sm">Original Balance</span>
+                      <span className="text-slate-800 font-semibold text-sm">
+                        ${String((selectedRequest.required_fields_payload as Record<string, unknown>).balance)}
+                      </span>
+                    </div>
+                  )}
+                  {(selectedRequest.status === 'RESPONDED' || selectedRequest.status === 'CLOSED') && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-500 text-sm">Current Balance</span>
+                      <span className="text-emerald-600 font-semibold text-sm">$0.00</span>
+                    </div>
+                  )}
                 </div>
               </div>
+
+              {/* Client Response */}
+              {(selectedRequest.status === 'RESPONDED' || selectedRequest.status === 'CLOSED') &&
+               selectedRequest.resolution_code && (
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">
+                    Client Response
+                  </h3>
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+                    <div className="flex items-center space-x-2 mb-3">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-200 text-emerald-800">
+                        {formatResolutionCode(selectedRequest.resolution_code)}
+                      </span>
+                      {selectedRequest.responded_at && (
+                        <span className="text-emerald-600 text-xs">
+                          {formatDateTime(selectedRequest.responded_at)}
+                        </span>
+                      )}
+                    </div>
+                    {selectedRequest.resolution_notes && (
+                      <p className="text-emerald-800 text-sm mb-3">{selectedRequest.resolution_notes}</p>
+                    )}
+                    {/* Client attachments */}
+                    {selectedRequest.attachments?.filter(a => a.uploaded_by_client).length > 0 && (
+                      <div className="space-y-2">
+                        {selectedRequest.attachments.filter(a => a.uploaded_by_client).map(att => (
+                          <div key={att.id} className="flex items-center space-x-3">
+                            <div className="flex items-center space-x-2 bg-white rounded-lg px-3 py-2 border border-emerald-200">
+                              <i className="fas fa-file-pdf text-red-500"></i>
+                              <span className="text-sm text-slate-700">{att.original_filename}</span>
+                            </div>
+                            <button className="text-blue-600 hover:text-blue-700 text-sm font-medium">
+                              <i className="fas fa-download mr-1"></i>Download
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Original Request */}
               <div>
@@ -563,7 +662,7 @@ export default function MyRequests() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-500 text-sm">Submitted</span>
-                    <span className="text-slate-800 text-sm">{formatDate(selectedRequest.created_at)}</span>
+                    <span className="text-slate-800 text-sm">{formatDateTime(selectedRequest.created_at)}</span>
                   </div>
                   {selectedRequest.notes && (
                     <div className="pt-2 border-t border-slate-200">
@@ -583,18 +682,21 @@ export default function MyRequests() {
                     Timeline
                   </h3>
                   <div className="space-y-4">
-                    {selectedRequest.timeline.map((event) => (
-                      <div key={event.id} className="flex items-start space-x-3">
-                        <div className="w-8 h-8 bg-slate-100 rounded-full flex items-center justify-center flex-shrink-0">
-                          <i className="fas fa-circle text-slate-400 text-xs"></i>
+                    {selectedRequest.timeline.slice().reverse().map((event) => {
+                      const iconProps = getTimelineIconProps(event.type);
+                      return (
+                        <div key={event.id} className="flex items-start space-x-3">
+                          <div className={`w-8 h-8 ${iconProps.bg} rounded-full flex items-center justify-center flex-shrink-0`}>
+                            <i className={`fas ${iconProps.icon} ${iconProps.color} text-xs`}></i>
+                          </div>
+                          <div>
+                            <p className="text-slate-700 text-sm font-medium">{event.description}</p>
+                            {event.user && <p className="text-slate-500 text-xs">by {event.user}</p>}
+                            <p className="text-slate-400 text-xs mt-1">{formatDateTime(event.timestamp)}</p>
+                          </div>
                         </div>
-                        <div>
-                          <p className="text-slate-700 text-sm font-medium">{event.description}</p>
-                          {event.user && <p className="text-slate-500 text-xs">by {event.user}</p>}
-                          <p className="text-slate-400 text-xs mt-1">{formatDate(event.timestamp)}</p>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}

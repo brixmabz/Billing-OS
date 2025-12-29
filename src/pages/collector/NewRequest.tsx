@@ -304,6 +304,7 @@ export default function NewRequest() {
       client_id: selectedClientId,
       account_reference: defaultAccountContext.accountNumber,
       internal_file_id: defaultAccountContext.fileId,
+      balance: defaultAccountContext.balance,
       request_type: requestType as APIRequestType,
       required_fields_payload: buildRequiredFieldsPayload(),
       notes: notes || undefined,

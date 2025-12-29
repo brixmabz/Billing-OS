@@ -137,7 +137,7 @@ class HttpClient {
     const response = await fetch(`${this.baseUrl}${endpoint}`, {
       method: 'POST',
       headers: this.getAuthHeaders(),
-      body: data ? JSON.stringify(data) : undefined,
+      body: JSON.stringify(data ?? {}),
     });
 
     return this.handleResponse<T>(response);

@@ -78,9 +78,18 @@ export default function Portal() {
   }, []);
 
   const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+
+    if (days > 0) {
+      return `${days}d ${hours}h`;
+    } else if (hours > 0) {
+      return `${hours}h ${mins}m`;
+    } else {
+      const secs = seconds % 60;
+      return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -142,6 +151,7 @@ export default function Portal() {
   };
 
   const requestId = requestInfo?.request_id || 'REQ-0000';
+  const collectorNotes = typeof requestInfo?.details?.notes === 'string' ? requestInfo.details.notes : null;
 
   // Loading state
   if (loading) {
@@ -253,12 +263,12 @@ export default function Portal() {
                     <p className="text-slate-800 font-mono font-semibold">{requestInfo?.account_reference || 'N/A'}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">Agency</p>
-                    <p className="text-slate-800 font-mono font-semibold">{requestInfo?.agency_name || 'MSB'}</p>
+                    <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">File ID</p>
+                    <p className="text-slate-800 font-mono font-semibold">{requestInfo?.file_id || 'N/A'}</p>
                   </div>
                   <div>
-                    <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">Service Date</p>
-                    <p className="text-slate-800 font-semibold">{requestInfo?.service_date || 'N/A'}</p>
+                    <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">Balance</p>
+                    <p className="text-slate-800 font-semibold">{requestInfo?.balance || 'N/A'}</p>
                   </div>
                   <div>
                     <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">Inquiry Type</p>
@@ -267,11 +277,11 @@ export default function Portal() {
                     </span>
                   </div>
                 </div>
-                {requestInfo?.details && Object.keys(requestInfo.details).length > 0 && (
+                {collectorNotes && (
                   <div className="mt-4 pt-4 border-t border-slate-100">
                     <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">Details from Collector</p>
-                    <p className="text-slate-700 text-sm">
-                      {JSON.stringify(requestInfo.details)}
+                    <p className="text-slate-700 text-sm whitespace-pre-wrap">
+                      {collectorNotes}
                     </p>
                   </div>
                 )}

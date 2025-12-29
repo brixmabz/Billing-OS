@@ -12,12 +12,33 @@ export interface PortalRequestInfo {
   account_reference: string;
   request_type: RequestType;
   request_type_display: string;
-  agency_name: string;
-  service_date?: string;
-  details: Record<string, unknown>;
+  file_id?: string;
+  balance?: string;
+  details?: Record<string, unknown>;
   created_at: string;
-  expires_at: string;
-  has_responded: boolean;
+  expires_at?: string;
+  has_responded?: boolean;
+  status?: string;
+  client_name?: string;
+}
+
+// Backend response wrapper
+interface PortalRequestResponse {
+  is_valid: boolean;
+  request?: {
+    request_id: string;
+    request_type: string;
+    request_type_display: string;
+    account_reference: string;
+    file_id?: string;
+    balance?: string;
+    inquiry_details?: string;
+    created_at: string;
+    status: string;
+  };
+  client_name?: string;
+  expires_at?: string;
+  error?: string;
 }
 
 export interface PortalResponseData {
@@ -76,7 +97,27 @@ class PortalAPI {
    * Get request information for portal (no auth required, uses token)
    */
   async getPortalRequest(token: string): Promise<PortalRequestInfo> {
-    return this.request<PortalRequestInfo>(`/portal/${token}`);
+    const response = await this.request<PortalRequestResponse>(`/portal/${token}/request`);
+
+    if (!response.is_valid || !response.request) {
+      throw new Error(response.error || 'Invalid or expired token');
+    }
+
+    // Map backend response to frontend interface
+    return {
+      request_id: response.request.request_id,
+      account_reference: response.request.account_reference,
+      request_type: response.request.request_type as RequestType,
+      request_type_display: response.request.request_type_display,
+      file_id: response.request.file_id,
+      balance: response.request.balance,
+      details: response.request.inquiry_details ? { notes: response.request.inquiry_details } : undefined,
+      created_at: response.request.created_at,
+      status: response.request.status,
+      client_name: response.client_name,
+      expires_at: response.expires_at,
+      has_responded: response.request.status === 'RESPONDED',
+    };
   }
 
   /**
@@ -113,7 +154,7 @@ class PortalAPI {
    * Validate portal token
    */
   async validateToken(token: string): Promise<{ valid: boolean; expires_at?: string }> {
-    return this.request<{ valid: boolean; expires_at?: string }>(`/portal/${token}/validate`);
+    return this.request<{ valid: boolean; expires_at?: string }>(`/portal/validate/${token}`);
   }
 
   /**

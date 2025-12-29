@@ -17,9 +17,9 @@ export default function Login() {
   const { login, isAuthenticated, user, setDemoUser, isDevMode } = useAuth();
   const navigate = useNavigate();
 
-  // Redirect if already authenticated
+  // Redirect if already authenticated (but not while logging in or showing success modal)
   useEffect(() => {
-    if (isAuthenticated && user) {
+    if (isAuthenticated && user && !showSuccess && !isLoading) {
       const roleRedirects: Record<UserRole, string> = {
         collector: '/collector/requests',
         admin: '/admin/queue',
@@ -27,7 +27,7 @@ export default function Login() {
       };
       navigate(roleRedirects[user.role], { replace: true });
     }
-  }, [isAuthenticated, user, navigate]);
+  }, [isAuthenticated, user, navigate, showSuccess, isLoading]);
 
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -56,11 +56,18 @@ export default function Login() {
 
       // Production mode: call real API
       await login({ username, password, rememberMe });
+
+      // Login succeeded - now show success modal
+      // (useEffect won't redirect while isLoading is true or showSuccess is true)
       setSuccessMessage(`Signing in as ${username}...`);
       setShowSuccess(true);
-      // The useEffect at the top of this component will handle the redirect
-      // once the auth state updates with the user role
+
+      // After delay, hide modal - the useEffect will handle redirect
+      setTimeout(() => {
+        setShowSuccess(false);
+      }, 1500);
     } catch (err) {
+      setShowSuccess(false); // Hide modal on error
       showError(err instanceof Error ? err.message : 'Invalid username or password. Please try again.');
     } finally {
       setIsLoading(false);

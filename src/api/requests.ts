@@ -98,6 +98,7 @@ export interface CreateRequestData {
   client_id: number;
   account_reference: string;
   internal_file_id?: string;
+  balance?: string;  // CRM balance snapshot
   debtor_language?: string;
   request_type: RequestType;
   required_fields_payload: Record<string, unknown>;
@@ -125,6 +126,7 @@ export interface RequestFilters {
 
 export interface SendToClientData {
   recipient_email?: string;
+  cc_email?: string;
   message?: string;
 }
 
