@@ -92,3 +92,27 @@ alembic upgrade head
 # Rollback
 alembic downgrade -1
 ```
+
+## Deployment (Render)
+
+1. Push code to GitHub
+2. Create new Web Service in [Render Dashboard](https://dashboard.render.com/new/web)
+3. Connect your GitHub repo
+4. Set root directory to `backend`
+5. Configure:
+   - **Build Command:** `pip install -r requirements.txt`
+   - **Start Command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+6. Add environment variables:
+   - `DATABASE_PROVIDER` = `supabase`
+   - `DATABASE_URL` = Your Supabase connection string
+   - `SUPABASE_URL` = Your Supabase project URL
+   - `SUPABASE_KEY` = Your Supabase anon key
+   - `SUPABASE_SERVICE_KEY` = Your Supabase service role key
+   - `SECRET_KEY` = Generate a secure random string
+   - `CORS_ORIGINS` = `["https://your-app.vercel.app"]`
+   - `SLACK_ENABLED` = `false`
+   - `EMAIL_ENABLED` = `false`
+   - `DEBUG` = `false`
+7. Deploy
+
+**Note:** Free tier sleeps after 15 minutes of inactivity. First request after sleep takes ~30 seconds.
